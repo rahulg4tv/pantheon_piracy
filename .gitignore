@@ -1,0 +1,32 @@
+# --- secrets: NEVER commit ---
+.env
+.env.*
+*.env
+test.env/
+*.pem
+*.key
+*secret*
+*credential*
+*token*
+# --- data / databases / generated artifacts ---
+*.db
+*.db-wal
+*.db-shm
+*.csv
+*.tsv
+*.parquet
+*.json
+*.log
+*.mmdb
+*.html
+*.tar.gz
+# --- local dirs / build ---
+data/
+_box_snapshots/
+junk/
+refer/
+__pycache__/
+*.pyc
+venv/
+.DS_Store
+*.bak*

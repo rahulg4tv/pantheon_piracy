@@ -1,0 +1,15 @@
+[Unit]
+Description=PEX (ut_pex) peer harvester — P2P source #3
+After=network.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/hash_trackerv2
+Environment=PEX_DUR=45
+Environment=PEX_SEED_CAP=50
+ExecStart=/home/ec2-user/venv/bin/python3 /home/ec2-user/hash_trackerv2/pex_harvest.py --loop --limit 50 --loop-delay 900
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

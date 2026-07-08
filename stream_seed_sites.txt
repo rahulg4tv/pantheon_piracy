@@ -1,0 +1,30 @@
+# Phase 2 streaming-registry seed — sites NAMED in public government anti-piracy
+# reports: USTR "Notorious Markets" (2024/2025) + EUIPO Counterfeit & Piracy Watch List.
+# Format: domain, rank_hint, kind   (rank_hint = rough notability, not a precise metric)
+#
+# CAVEATS (important):
+#  * Pirate domains rotate constantly; several below (Fmovies network, Uptobox,
+#    Openload) were SEIZED in 2024 and may be dead or revived under new TLDs.
+#    -> The registry liveness check sets status=live/dead; build parsers ONLY for
+#       hosts that actually resolve live. Treat these TLDs as starting guesses to
+#       be confirmed, not ground truth.
+#  * Torrent sites (PirateBay/1337x/YTS/RuTracker/TorrentGalaxy) are intentionally
+#    EXCLUDED here — the P2P feed already covers them.
+#  * This is a SPIKE seed (prove the chain). The durable registry should come from a
+#    live ranked source (Google Transparency Report domains) once we can extract it.
+#
+# Sources:
+#  USTR 2025 Notorious Markets (final) PDF; EUIPO Counterfeit & Piracy Watch List 2025.
+
+# --- streaming (USTR/EUIPO named) ---
+fmovies.to,        100, streaming
+bmovies.to,         90, streaming
+9anime.to,          85, streaming
+putlocker.to,       80, streaming
+solarmovie.to,      75, streaming
+cuevana.to,         70, streaming
+# --- cyberlocker / direct-download (USTR/EUIPO named) ---
+rapidgator.net,     60, ddl
+1fichier.com,       55, ddl
+uptobox.com,        50, ddl
+krakenfiles.com,    45, ddl

@@ -1,0 +1,14 @@
+[Unit]
+Description=Pantheon Piracy Intelligence web (gunicorn)
+After=network.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/hash_trackerv2
+Environment=INTEL_DB=/data/db/pantheon_intel.db
+ExecStart=/home/ec2-user/venv/bin/gunicorn --workers 3 --threads 2 --bind 0.0.0.0:8090 --timeout 120 --graceful-timeout 30 --access-logfile /data/logs/pantheon_web.log --error-logfile /data/logs/pantheon_web.log pantheon_web:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
