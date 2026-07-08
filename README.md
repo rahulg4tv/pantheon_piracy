@@ -62,3 +62,8 @@ maintenance, health watchdog). See `docs/10_ops_runbook.md` and
 - **Secrets and data are not tracked.** `.env`, databases, CSV/parquet, GeoIP, and
   snapshots are git-ignored (see `.gitignore`) — this repo is **code + docs only**.
 - Start with `docs/00_OVERVIEW.md` and `docs/09_END_TO_END_FLOW.md`.
+
+## Layout
+- **Root** — the scheduled pipeline: every script run by cron or a systemd service, plus the modules they import (`tracker_harvest.py`, `dht_single_writer.py`).
+- **`tools/`** — auxiliary / ad-hoc scripts not in the automated schedule (see `tools/README.md`).
+- **`docs/`** — architecture, per-component, and end-to-end flow docs.
