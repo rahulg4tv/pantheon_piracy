@@ -65,5 +65,4 @@ maintenance, health watchdog). See `docs/10_ops_runbook.md` and
 
 ## Layout
 - **Root** — the scheduled pipeline: every script run by cron or a systemd service, plus the modules they import (`tracker_harvest.py`, `dht_single_writer.py`).
-- **`tools/`** — auxiliary / ad-hoc scripts not in the automated schedule (see `tools/README.md`).
 - **`docs/`** — architecture, per-component, and end-to-end flow docs.
