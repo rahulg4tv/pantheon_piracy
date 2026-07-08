@@ -63,6 +63,16 @@ maintenance, health watchdog). See `docs/10_ops_runbook.md` and
   snapshots are git-ignored (see `.gitignore`) — this repo is **code + docs only**.
 - Start with `docs/00_OVERVIEW.md` and `docs/09_END_TO_END_FLOW.md`.
 
-## Layout
-- **Root** — the scheduled pipeline: every script run by cron or a systemd service, plus the modules they import (`tracker_harvest.py`, `dht_single_writer.py`).
-- **`docs/`** — architecture, per-component, and end-to-end flow docs.
+
+## Repository structure
+- **Root** — pipeline spine: DHT collection (`dht_peer_count.py` + `dht_single_writer.py` + `dht_ipc_writer.py`), matching (`trending_hash_collector.py`, `alias_remap.py`, `build_title_aliases.py`), aggregation → S3 feed (`merge_and_upload.py`), NBCU export (`export_nbcu.py`), dashboard (`pantheon_web.py`).
+- **`collectors/`** — other peer-IP collectors (tracker / PEX / velocity / crawl).
+- **`streaming/`** — non-torrent demand (streaming, AceStream live sports).
+- **`intel/`** — demand-intel builder + decoy detection.
+- **`output/`** — secondary export & Parquet compaction.
+- **`ops/`** — maintenance, monitoring, scheduling (shell + python).
+- **`deploy/`** — systemd units & config.
+- **`docs/`** — architecture & end-to-end flow docs.
+- **`tests/`** — test suite.
+
+Each folder has its own README. Note: production runs from a flat directory; this repo groups files by function for readability.
