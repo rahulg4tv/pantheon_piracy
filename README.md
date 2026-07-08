@@ -65,14 +65,14 @@ maintenance, health watchdog). See `docs/10_ops_runbook.md` and
 
 
 ## Repository structure
-- **Root** — pipeline spine: DHT collection (`dht_peer_count.py` + `dht_single_writer.py` + `dht_ipc_writer.py`), matching (`trending_hash_collector.py`, `alias_remap.py`, `build_title_aliases.py`), aggregation → S3 feed (`merge_and_upload.py`), NBCU export (`export_nbcu.py`), dashboard (`pantheon_web.py`).
-- **`collectors/`** — other peer-IP collectors (tracker / PEX / velocity / crawl).
+- **`collect_hashes/`** — discover infohashes to track + the title catalog/matching.
+- **`collect_peers/`** — collect distinct peer IPs for those hashes (DHT / tracker / PEX / velocity).
+- **Root** — turn peers into the product: `merge_and_upload.py` (→ S3 feed), `export_nbcu.py` (→ NBCU), `pantheon_web.py` (dashboard).
 - **`streaming/`** — non-torrent demand (streaming, AceStream live sports).
 - **`intel/`** — demand-intel builder + decoy detection.
 - **`output/`** — secondary export & Parquet compaction.
-- **`ops/`** — maintenance, monitoring, scheduling (shell + python).
+- **`ops/`** — maintenance, monitoring, scheduling.
 - **`deploy/`** — systemd units & config.
-- **`docs/`** — architecture & end-to-end flow docs.
-- **`tests/`** — test suite.
+- **`docs/`**, **`tests/`**.
 
-Each folder has its own README. Note: production runs from a flat directory; this repo groups files by function for readability.
+Each folder has its own README. Data flow: `collect_hashes → collect_peers → merge_and_upload/export_nbcu → feed + dashboard`. Production runs from a flat directory; this repo groups by function for readability.
