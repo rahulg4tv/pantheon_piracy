@@ -1,9 +1,7 @@
-> **Shared copy.** Infra identifiers (AWS account id, S3 bucket names, EC2 instance ids, host IP) are replaced with `YOUR_*` placeholders — set your own before running. Internal working notes, competitive research, and the security audit are intentionally excluded from this repo.
-
 # Pantheon Piracy Intelligence
 
 A self-hosted pipeline that measures **per-title, per-country piracy demand** as
-**distinct peer-IP counts** — an in-house, NBCU-equivalent demand feed — plus a
+**distinct peer-IP counts** — an in-house demand feed — plus a
 second **web-streaming** intelligence channel.
 
 The core idea: for every title we care about, find the torrent swarms carrying it,
@@ -71,7 +69,7 @@ The daily jobs take the four per-source peer sets and produce the demand feed:
 - **`export_nbcu.py`** — UNIONs all sources, **dedupes to distinct IPs** per
   (title × country), adds per-source breakdown columns, normalizes country names, and
   applies catalog-official titles + IMDb/MAL de-fragmentation → the daily
-  NBCU-equivalent per-country CSV.
+  per-country CSV.
 - **`merge_and_upload.py`** — the same distinct-IP union built for the dashboard
   feed, plus day-over-day velocity and spike alerts.
 
