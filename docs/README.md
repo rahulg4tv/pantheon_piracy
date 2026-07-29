@@ -2,13 +2,14 @@
 
 Start with the [root README](../README.md) for the four-stage flow. Then:
 
-## Read these three, in this order
+## Read these first, in this order
 
 | | Doc | Why |
 |---|---|---|
-| 1 | [`DATA_MODEL.md`](DATA_MODEL.md) | **Start here.** Infohash, `ip_id`, the distinct-IP union, the day window. Almost every design decision follows from these four ideas, and most past bugs came from getting one slightly wrong. |
-| 2 | [`09_END_TO_END_FLOW.md`](09_END_TO_END_FLOW.md) | The same flow as the root README, but with every data store and the cron/systemd wiring. |
-| 3 | [`00_OVERVIEW.md`](00_OVERVIEW.md) | Architecture overview and the schedule. |
+| 1 | [`WORKED_EXAMPLE.md`](WORKED_EXAMPLE.md) | **The fastest way in.** One film followed end to end with tiny numbers you can verify by hand — matching, the distinct-IP union, geo, the output row. |
+| 2 | [`DATA_MODEL.md`](DATA_MODEL.md) | The same ideas stated precisely: infohash, `ip_id`, the distinct-IP union, the day window. Almost every design decision follows from these four, and most past bugs came from getting one slightly wrong. |
+| 3 | [`09_END_TO_END_FLOW.md`](09_END_TO_END_FLOW.md) | The same flow as the root README, but with every data store and the cron/systemd wiring. |
+| 4 | [`00_OVERVIEW.md`](00_OVERVIEW.md) | Architecture overview and the schedule. |
 
 ## Per-component reference
 
@@ -50,6 +51,7 @@ orientation in the larger scripts.
 
 ## If you only have ten minutes
 
-Read the [root README](../README.md) flow diagram, then §2 (`ip_id`), §4
-(distinct-IP union) and §5 (the day window) of [`DATA_MODEL.md`](DATA_MODEL.md).
-That is enough to read any number the system produces and know what it means.
+Read the [root README](../README.md) flow diagram, then
+[`WORKED_EXAMPLE.md`](WORKED_EXAMPLE.md) — one film, tiny numbers, the whole
+pipeline. That is enough to read any number the system produces and know what it
+means, including what it deliberately does not mean.

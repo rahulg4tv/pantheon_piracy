@@ -120,7 +120,10 @@ maintenance, health watchdog). Full setup and operations:
 ## Where to start reading
 
 1. **This README** — the whole flow in one page.
-2. **[`docs/DATA_MODEL.md`](docs/DATA_MODEL.md)** — the four ideas the rest of the
+2. **[`docs/WORKED_EXAMPLE.md`](docs/WORKED_EXAMPLE.md)** — one film (Colony)
+   followed end to end with tiny numbers you can check by hand. The fastest way
+   to see how it all fits together.
+3. **[`docs/DATA_MODEL.md`](docs/DATA_MODEL.md)** — the four ideas the rest of the
    system follows from: the infohash, the `ip_id`, the distinct-IP union, and the
    day window. Read this before any code; almost every subtle bug this pipeline
    has had came from getting one of them slightly wrong.
@@ -128,8 +131,8 @@ maintenance, health watchdog). Full setup and operations:
    stores and cron/systemd wiring.
 4. [`docs/README.md`](docs/README.md) — index of every doc, and what to read when.
 
-**In ten minutes:** the flow diagram above, then §2, §4 and §5 of
-[`docs/DATA_MODEL.md`](docs/DATA_MODEL.md). That is enough to read any number the
+**In ten minutes:** the flow diagram above, then
+[`docs/WORKED_EXAMPLE.md`](docs/WORKED_EXAMPLE.md). That is enough to read any number the
 system produces and know what it means — including what it deliberately does not
 mean.
 
