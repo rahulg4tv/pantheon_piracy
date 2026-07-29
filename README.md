@@ -105,7 +105,7 @@ the flow is easy to read. **Each folder has its own README.**
 | [`output/`](output/README.md) | Secondary export & Parquet compaction |
 | [`ops/`](ops/README.md) | Maintenance, monitoring, scheduling (WAL, watchdog, S3 sync) |
 | [`deploy/`](deploy/README.md) | systemd units & config |
-| `docs/` | Architecture, per-component docs, ops runbook, research |
+| [`docs/`](docs/README.md) | Data model, architecture, per-component docs, ops runbook, research |
 | `tests/` | Tests |
 
 ## Running
@@ -119,11 +119,19 @@ maintenance, health watchdog). Full setup and operations:
 
 ## Where to start reading
 
-1. This README — the whole flow in one page.
-2. [`docs/09_END_TO_END_FLOW.md`](docs/09_END_TO_END_FLOW.md) — the flow with data
+1. **This README** — the whole flow in one page.
+2. **[`docs/DATA_MODEL.md`](docs/DATA_MODEL.md)** — the four ideas the rest of the
+   system follows from: the infohash, the `ip_id`, the distinct-IP union, and the
+   day window. Read this before any code; almost every subtle bug this pipeline
+   has had came from getting one of them slightly wrong.
+3. [`docs/09_END_TO_END_FLOW.md`](docs/09_END_TO_END_FLOW.md) — the flow with data
    stores and cron/systemd wiring.
-3. [`docs/00_OVERVIEW.md`](docs/00_OVERVIEW.md) — architecture overview, then the
-   numbered per-component docs.
+4. [`docs/README.md`](docs/README.md) — index of every doc, and what to read when.
+
+**In ten minutes:** the flow diagram above, then §2, §4 and §5 of
+[`docs/DATA_MODEL.md`](docs/DATA_MODEL.md). That is enough to read any number the
+system produces and know what it means — including what it deliberately does not
+mean.
 
 ## Notes
 
