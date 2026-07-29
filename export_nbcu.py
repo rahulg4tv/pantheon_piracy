@@ -55,7 +55,7 @@ Usage:
       --out /data/daily/2026-05-30.csv
 """
 from __future__ import annotations
-import argparse, csv, sqlite3, datetime
+import argparse, csv, sqlite3, datetime, os, sys
 
 DB = "file:/data/db/hashes_v2.db?mode=ro"
 HARVEST_DB = "/data/db/harvest_peers.db"  # ATTACHed read-only if present
@@ -241,31 +241,25 @@ def _ids(imdb_id: str | None, ip_id: str) -> tuple[str, str]:
     return "", ""
 
 
-def _build_canon(c) -> dict:
-    """Map a leftover legacy Q-style ip_id to the canonical (anime-/film-tt/series-tt)
-    id of the SAME title, so a title split across a stale `Q` duplicate and its real
-    catalog id is reported as ONE row instead of two. CONSERVATIVE: only merges when a
-    title has EXACTLY ONE canonical id and one+ legacy `Q` ids — ambiguous cases (two
-    `Q`s, or film-tt vs series-tt) are left untouched to avoid false merges. Built from
-    the `hashes` catalog, so it is independent of which titles have peers today."""
-    import collections
-    CANON = ("anime-", "mal-", "film-tt", "series-tt")
-    LEGACY = ("film-Q", "series-Q")
-    ti: dict[str, set] = collections.defaultdict(set)
-    for title, ipid in c.execute(
-            "SELECT DISTINCT title, ip_id FROM hashes "
-            "WHERE ip_id IS NOT NULL AND title IS NOT NULL"):
-        ti[title].add(ipid)
-    canon: dict[str, str] = {}
-    for title, ids in ti.items():
-        if len(ids) < 2:
-            continue
-        canon_ids = [i for i in ids if i.startswith(CANON)]
-        legacy_ids = [i for i in ids if i.startswith(LEGACY)]
-        if len(canon_ids) == 1 and legacy_ids:
-            for lid in legacy_ids:
-                canon[lid] = canon_ids[0]
-    return canon
+def _family(ip_id: str) -> str:
+    if ip_id.startswith("film-"):
+        return "film"
+    if ip_id.startswith(("anime-", "mal-")):
+        return "anime"
+    if ip_id.startswith("series-"):
+        return "series"
+    return "?"
+
+
+def _compatible_family(src: str, tgt: str) -> bool:
+    """May `src` fold into `tgt`? Same family only — except series -> anime,
+    which is the intended Wikidata->MAL anime mapping, not a category change.
+    Unknown prefixes are permitted so this never blocks an id shape we do not
+    model; the guard exists to stop film<->series, which is always wrong."""
+    a, b = _family(src), _family(tgt)
+    if a == "?" or b == "?":
+        return True
+    return a == b or (a == "series" and b == "anime")
 
 
 def _build_canon_v2(titlemeta: dict) -> dict:
@@ -276,7 +270,7 @@ def _build_canon_v2(titlemeta: dict) -> dict:
     UNMAPPED fragments fold into the lone resolved id of that title, but ONLY when
     the title has exactly one resolved id (so e.g. One Piece anime vs live-action
     stays split). Operates on titlemeta (ids present in today's feed) — no full
-    hashes scan, so it is also faster than the old title-keyed _build_canon."""
+    hashes scan, so it is also faster than the title-keyed approach it replaced."""
     import collections
     by_imdb = collections.defaultdict(list)
     by_anime = collections.defaultdict(list)
@@ -308,6 +302,7 @@ def _build_canon_v2(titlemeta: dict) -> dict:
     for rid, m in titlemeta.items():
         if m[4]:
             res_to_rid.setdefault(m[4], rid)
+    blocked = 0
     for tkey, rids in unmapped_by_title.items():
         rset = resolved_by_title.get(tkey, set())
         if len(rset) == 1:
@@ -317,7 +312,24 @@ def _build_canon_v2(titlemeta: dict) -> dict:
             tgt = canon.get(tgt, tgt)   # follow to the group's target (no chains)
             for r in rids:
                 if r != tgt and r not in canon:
+                    # FILM<->SERIES GUARD (2026-07-27). This fallback folds an
+                    # UNMAPPED id into the lone resolved id sharing its title —
+                    # and a remade title has an old film and a new series sharing
+                    # a name. 'Robin Hood' = film-Q689658 (1991, not in the
+                    # catalog, so unmapped) + series-tt33484460 (2025, resolved):
+                    # exactly one resolved id, so the FILM folded into the SERIES
+                    # and its whole swarm shipped as TV demand. The by_imdb /
+                    # by_anime paths above are safe because they key on an
+                    # authoritative id; only this title-keyed fallback can cross
+                    # families. series-Q -> anime-* stays allowed: anime is keyed
+                    # on MAL and that is not a category change.
+                    if not _compatible_family(r, tgt):
+                        blocked += 1
+                        continue
                     canon[r] = tgt
+    if blocked:
+        print(f"[export] canonical map: {len(canon):,} merges, "
+              f"{blocked} cross-family fold(s) blocked (film<->series)")
     return canon
 
 
@@ -489,10 +501,46 @@ def export(date: str, out: str) -> None:
         print(f"  {v:>10,}  {name[tid][:40]}{flag}")
 
 
+def _guard_past_date(date: str, out: str, force: bool) -> None:
+    """Refuse to overwrite an existing daily file for a PAST date.
+
+    A past day is NOT reproducible. `peers.last_seen` is DATE-only and updated in
+    place, so a peer seen on the 25th and again on the 26th moves OUT of the
+    25th's window. Re-exporting therefore returns a strictly smaller day, and the
+    result looks perfectly well-formed — the loss is invisible without diffing
+    totals. Measured 2026-07-26: re-running 2026-07-25 less than two hours after
+    the original cost 10.9% of the day (8,951,263 -> 7,978,200 IP_COUNT) and every
+    single title shrank, not just the one being corrected.
+
+    To fix a LABEL in a past file, patch the CSV rows in place and assert the row
+    count and SUM(IP_COUNT) are unchanged. Regeneration is for the current date.
+    """
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    if date >= today or force or not os.path.exists(out):
+        return
+    try:
+        with open(out, newline="") as f:
+            rows = sum(1 for _ in f) - 1
+    except OSError:
+        rows = -1
+    sys.exit(
+        f"REFUSING to overwrite {out} ({rows:,} rows) — {date} is in the past and "
+        f"is NOT reproducible.\n"
+        f"  Re-exporting a past date silently drops every peer whose last_seen has "
+        f"moved forward (~11%/day elapsed).\n"
+        f"  To relabel rows: patch the CSV in place, then verify rows and "
+        f"SUM(IP_COUNT) are unchanged.\n"
+        f"  To override anyway (you will lose data): --force"
+    )
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d"))
     ap.add_argument("--out", default=None)
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite a past-date file even though it loses data")
     a = ap.parse_args()
     out = a.out or f"/data/daily/{a.date}.csv"
+    _guard_past_date(a.date, out, a.force)
     export(a.date, out)

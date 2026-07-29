@@ -94,6 +94,11 @@ def init_db():
         hash TEXT NOT NULL, ip TEXT NOT NULL, country TEXT,
         first_seen TEXT, last_seen TEXT, PRIMARY KEY(hash, ip))""")
     con.execute("CREATE INDEX IF NOT EXISTS idx_pex_lastseen ON peers(last_seen)")
+    # Rotation ledger. Records that a hash was HARVESTED, whether or not it
+    # yielded peers — `peers` alone cannot express "looked, found nothing", so
+    # rotation keyed off it re-picks every zero-yield hash forever.
+    con.execute("""CREATE TABLE IF NOT EXISTS visits(
+        hash TEXT PRIMARY KEY, last_visit TEXT, last_yield INT)""")
     con.commit()
     return con
 
@@ -113,14 +118,70 @@ def harvest_one(hx):
             ips |= f.result()
     return ips
 
+POOL = int(os.environ.get("PEX_POOL", "4000"))   # demand-ranked candidates to rotate through
+
+
 def worklist(limit):
+    """Pick the next `limit` hashes: high current demand, LEAST-RECENTLY PEXed first.
+
+    Rewritten 2026-07-27. The old query was
+
+        SELECT hash, COUNT(*) n FROM peers WHERE ip!='_queried_'
+        GROUP BY hash ORDER BY n DESC LIMIT ?
+
+    which had three separate faults:
+
+    1. It ranked by ALL-TIME accumulated peer rows — i.e. by how long a hash had
+       been tracked, not by how many people are sharing it now. It sat on
+       Interstellar and The Godfather while ignoring live releases, and picked
+       hashes with seeders=100 over ones with seeders=13,468.
+    2. It was DETERMINISTIC with no rotation, so every 15-minute cycle re-queried
+       the SAME 50 hashes. Measured on 2026-07-27: pex_peers.db contained 73
+       distinct hashes for its entire lifetime, out of 103,100 live ones — 0.07%
+       of the catalog, and not one Series or Anime, ever.
+    3. It was the unbounded `GROUP BY hash` over all 66M peer rows — the exact
+       query that deadlocked every collector on the cold start after the
+       2026-07-25 reboot. That was bounded in dht_peer_count.py and
+       tracker_harvest_service.py (commit 3b0f919); this file was missed and kept
+       running the full aggregate every 15 minutes.
+
+    Now: take a demand-ranked pool of live hashes (seeders DESC, 30-day bound like
+    its sibling collectors), then order that pool by when PEX last visited each
+    hash. Never-visited hashes sort first, so it sweeps the catalog instead of
+    hammering the same 50; among equals, higher demand wins.
+    """
     c = sqlite3.connect(HASH_DB, uri=True)
     try:
-        rows = c.execute("SELECT hash, COUNT(*) n FROM peers WHERE ip!='_queried_' "
-                         "GROUP BY hash ORDER BY n DESC LIMIT ?", (limit,)).fetchall()
+        c.execute("PRAGMA busy_timeout=30000")
+        pool = c.execute(
+            "SELECT hash FROM hashes "
+            "WHERE last_seen >= date('now','-30 days') AND seeders IS NOT NULL "
+            "ORDER BY seeders DESC LIMIT ?", (POOL,)).fetchall()
     finally:
         c.close()
-    return [r[0] for r in rows]
+    pool = [r[0] for r in pool]
+    if not pool:
+        return []
+
+    # When did PEX last LOOK at each of these? Read from `visits`, not from
+    # `peers`: a hash that was harvested and yielded ZERO peers writes no peer
+    # row, so keying rotation off `peers` left it on the ""/never-visited
+    # sentinel and it sorted to the front again every cycle, forever. With a
+    # pool of high-seeder hashes, zero-yield ones (no seed advertises ut_pex)
+    # are routine, so that silently rebuilt the same fixed-worklist blind spot
+    # this rewrite was meant to remove.
+    seen = {}
+    try:
+        p = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        p.execute("PRAGMA busy_timeout=30000")
+        seen = {h: ls for h, ls in p.execute("SELECT hash, last_visit FROM visits")}
+        p.close()
+    except sqlite3.Error:
+        pass                      # first run / no visits table yet => all unvisited
+
+    # "" sorts before any date, so never-PEXed hashes go first; pool order (which
+    # is seeders DESC) breaks ties because sort is stable.
+    return sorted(pool, key=lambda h: seen.get(h, ""))[:limit]
 
 def run_pass(con, limit):
     today = time.strftime("%Y-%m-%d", time.gmtime())
@@ -132,6 +193,10 @@ def run_pass(con, limit):
                 con.execute("INSERT INTO peers(hash,ip,country,first_seen,last_seen) "
                             "VALUES(?,?,?,?,?) ON CONFLICT(hash,ip) DO UPDATE SET last_seen=excluded.last_seen",
                             (hx, ip, country(ip), today, today))
+            con.execute("INSERT INTO visits(hash,last_visit,last_yield) VALUES(?,?,?) "
+                        "ON CONFLICT(hash) DO UPDATE SET last_visit=excluded.last_visit,"
+                        " last_yield=excluded.last_yield",
+                        (hx, today, len(ips)))
             tot += len(ips)
             con.commit()
     print("%s pex pass: %d hashes, %d peer-rows upserted (db=%s)"

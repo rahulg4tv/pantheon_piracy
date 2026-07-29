@@ -119,9 +119,30 @@ def load_peer_counts(date: str) -> pd.DataFrame:
               f"{[f.name for f in worker_files]}")
         frames = []
         for wf in worker_files:
-            wdf = pd.read_csv(wf)
+            # TOLERATE TORN LINES (2026-07-27). The DHT workers append to these
+            # files continuously; when a worker is replaced, the outgoing process
+            # can flush its buffer after the replacement has started appending,
+            # splicing two records together:
+            #   ...,GH,1,0<2026-07-27,05:24,dab7179c...,series-tt...
+            # pandas raised "Expected 11 fields, saw 20" and the WHOLE daily merge
+            # died. On 2026-07-27 that was 2 malformed lines out of ~1.5M killing
+            # the feed for 12h (the 11:00 and 17:00 runs both failed). A couple of
+            # unparseable rows must cost us those rows, not the day.
+            raw = sum(1 for _ in open(wf, "rb")) - 1        # minus header
+            wdf = pd.read_csv(wf, on_bad_lines="skip")
+            dropped = raw - len(wdf)
             frames.append(wdf)
-            print(f"[merge]   {wf.name}: {len(wdf):,} rows")
+            note = ""
+            if dropped > 0:
+                pct = 100 * dropped / max(raw, 1)
+                note = f"  [SKIPPED ~{dropped:,} malformed line(s), {pct:.3f}%]"
+                # A handful is torn writes; a large share means real corruption
+                # (truncated file, wrong schema) and the numbers should not be
+                # trusted silently.
+                if pct > 0.1:
+                    print(f"[merge]   !! {wf.name}: {pct:.2f}% of lines unparseable "
+                          f"— investigate before trusting this day")
+            print(f"[merge]   {wf.name}: {len(wdf):,} rows{note}")
         df = pd.concat(frames, ignore_index=True)
         print(f"[merge] Combined worker CSVs: {len(df):,} rows total")
     else:
@@ -656,6 +677,9 @@ def upload_to_s3(local_path: Path, date: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", help="Date to merge (YYYY-MM-DD), default: yesterday")
+    parser.add_argument("--force", action="store_true",
+
+                     help="overwrite a past-date merged file (loses data)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Compute and write output to /tmp only — no S3 upload, "
                              "no SNS alerts, does not overwrite the production merged file.")
@@ -775,6 +799,30 @@ def main():
     else:
         out_path = MERGED_DIR / f"{date}.csv"
     tmp_path = out_path.with_suffix(".tmp.csv")
+    # PAST-DATE OVERWRITE GUARD (2026-07-28). A past day is NOT reproducible:
+    # every peers table is UPSERTED in place and last_seen is DATE-only, so a peer
+    # seen on D and again on D+1 has moved out of D's window. Re-merging D returns
+    # a strictly smaller, perfectly well-formed day.
+    #
+    # This fires on the normal schedule, not just manual runs: the timer runs
+    # 05/11/17/23 UTC and get_date() returns YESTERDAY before 06:00 — so the 05:00
+    # run rebuilds the day the 23:00 run already wrote, then overwrites both the
+    # local file and the S3 object with the drained version. Measured on the
+    # export side: -10.9% in under two hours, and every title shrank.
+    #
+    # Downstream, add_peer_velocity reads the previous day's file as its baseline,
+    # so a shrunken D also inflates peer_count_delta for all of D+1 and can fire a
+    # wave of false >50% spike alerts.
+    if not args.dry_run and out_path.exists() and date < datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+        if not getattr(args, "force", False):
+            prev_rows = sum(1 for _ in open(out_path)) - 1
+            print(f"[merge] REFUSING to overwrite {out_path} ({prev_rows:,} rows): "
+                  f"{date} is in the past and is NOT reproducible — re-merging drops "
+                  f"every peer whose last_seen has moved on (~11%/day elapsed).")
+            print("[merge] Nothing written, nothing uploaded. Use --force to override "
+                  "(you will lose data), or patch the CSV in place to fix a label.")
+            return
+        print(f"[merge] --force: overwriting past-date {out_path} (data loss accepted)")
     final.to_csv(tmp_path, index=False)
     tmp_path.replace(out_path)   # atomic on POSIX
     size_mb = out_path.stat().st_size / 1024 / 1024

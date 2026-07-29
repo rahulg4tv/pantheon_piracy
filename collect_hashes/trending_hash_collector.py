@@ -47,7 +47,7 @@ DB_PATH    = DATA_DIR / "hashes_v2.db"
 
 # Catalog parquets — on EC2 downloaded from S3 to /data/catalog/,
 # fall back to local data/ dir for development.
-# S3 source: s3://YOUR_UI_S3_BUCKET/platform_data/
+# S3 source: s3://pantheon-ui-csv-json-data/platform_data/
 _CATALOG_DIR = Path("/data/catalog") if Path("/data/catalog").exists() else DATA_DIR
 MOVIE_PQ   = _CATALOG_DIR / "movies_info.parquet"
 SERIES_PQ  = _CATALOG_DIR / "series_info.parquet"
@@ -467,6 +467,68 @@ def _normalize(text: str) -> str:
     return text
 
 
+# ── Distinctive-word divergence guard (2026-07) ───────────────────────────────
+# Rejects a fuzzy title match when the two titles keep DIFFERENT distinctive words
+# and share fewer than 2 anchor words — the false-positive class where a torrent
+# matches a same-leading-word catalog title ("Treasure And Dirt"→"Treasure Island",
+# "House at the Edge of the Woods"→"…End of the World", "Bake Off The Professionals"
+# →"MasterChef: The Professionals"). Validated by scripts/guard_harness.py: over a
+# 6k-hash sample it rejected only real mis-tags and broke 0 good matches.
+# Normalizes possessive-s / region suffixes / season+episode tags, and preserves
+# compound-word spacing variants ("Summertime"/"Summer Time") via a space-removed
+# similarity check so legitimate matches survive. Applies ONLY to the fuzzy path —
+# exact-title and IMDb-id matches return earlier, untouched.
+_GUARD_STOP = {"the", "a", "an", "of", "in", "and", "to", "is", "for", "on",
+               "with", "at", "by", "from", "or"}
+_GUARD_SUFFIX = {"us", "uk", "ca", "au", "nz", "ie", "gb", "complete", "uncut",
+                 "extended", "remastered", "proper", "repack", "internal",
+                 "limited", "dubbed", "subbed", "multi", "dual", "hdr"}
+
+
+def _guard_is_tech(w: str) -> bool:
+    """True if a token is a release/format artifact, not a title word."""
+    if w.isdigit():
+        return True                                    # bare number / year
+    if w.endswith("p") and w[:-1].isdigit():
+        return True                                    # 1080p / 720p
+    if w and w[0] == "s" and w[1:].isdigit():
+        return True                                    # s01 / s7
+    if w and w[0] == "e" and w[1:].isdigit():
+        return True                                    # e05
+    if w and w[0] == "s" and "e" in w[1:]:
+        a, _, b = w[1:].partition("e")
+        if a.isdigit() and b.isdigit():
+            return True                                # s01e02
+    return False
+
+
+def _guard_tokens(title: str) -> set[str]:
+    """Distinctive words of a title: drop stop/suffix/tech tokens, collapse
+    possessive & plural 's' (clarksons -> clarkson) so apostrophe-dropped
+    torrent names still align with the catalog's punctuated title."""
+    out = set()
+    for w in _normalize(title or "").split():
+        if len(w) < 2 or w in _GUARD_STOP or w in _GUARD_SUFFIX or _guard_is_tech(w):
+            continue
+        out.add(w[:-1] if len(w) > 3 and w.endswith("s") else w)
+    return out
+
+
+def _titles_diverge(query_title: str, matched_title: str) -> bool:
+    """True => REJECT this fuzzy match (the two titles' distinctive words diverge)."""
+    q, m = _guard_tokens(query_title), _guard_tokens(matched_title)
+    if not q or not m:
+        return False                                   # can't judge — keep
+    shared, q_only, m_only = q & m, q - m, m - q
+    if q_only and m_only and len(shared) < 2:
+        a = _normalize(query_title).replace(" ", "")
+        b = _normalize(matched_title).replace(" ", "")
+        if a and b and SequenceMatcher(None, a, b).ratio() >= 0.90:
+            return False                               # spacing/compound-word variant — keep
+        return True
+    return False
+
+
 def parse_torrent_name(raw: str) -> tuple[str, str | None]:
     """
     Returns (clean_title, year_or_None).
@@ -476,6 +538,34 @@ def parse_torrent_name(raw: str) -> tuple[str, str | None]:
     parsed = PTN.parse(raw)
     title  = (parsed.get("title") or "").strip()
     year   = str(parsed.get("year")) if parsed.get("year") else None
+    if year is None and title:
+        # YEAR RECOVERY (2026-07-28). PTN sometimes folds the year INTO the title
+        # and reports no year: 'Colony.2026.1080p.Korean.WEBRip...' parses to
+        # ('Colony 2026', None). That is worse than it looks — the year is the
+        # main defence against same-title-different-work, so a None year disables
+        # every downstream year check, and the leftover '2026' token stays in the
+        # title. 'Colony 2026' (1,841 seeders) then fuzzy-matched 'Colony' the
+        # 2010 film and shipped as its demand.
+        #
+        # Only recover from the TITLE PTN returned, never from the raw string, so
+        # resolution/codec tokens can't be misread. Take the LAST year-like token
+        # and require a non-year word before it, so titles that ARE years survive:
+        # '2012' / '1917' keep their title, and 'Blade Runner 2049' keeps 2049 in
+        # the title rather than losing the word (PTN gives that one a real year).
+        # EPISODIC GUARD: for TV the number in the name is usually NOT the work's
+        # release year. A daily show carries an air DATE ('The.Daily.Show.2026.
+        # 07.20') and a season pack carries the season's year ('Wednesday S02 ...
+        # 2025') — both correctly belong to shows first aired in 1996 and 2022.
+        # Recovering a year there would contradict the catalog and unmap them.
+        episodic = re.search(r"(?i)\bS\d{1,2}\s?E\d{1,3}\b|\bS\d{2}\b"
+                             r"|(?<!\d)(?:19|20)\d{2}[.\-\s](?:0[1-9]|1[0-2])"
+                             r"[.\-\s](?:0[1-9]|[12]\d|3[01])(?!\d)", raw or "")
+        m = list(re.finditer(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", title))
+        if m and not episodic:
+            last = m[-1]
+            head = title[:last.start()].strip(" .-_")
+            if head and not head.isdigit():
+                title, year = head, last.group(1)
     return title, year
 
 
@@ -540,11 +630,13 @@ class Catalog:
             for w in words:
                 self._word_idx[w].append(idx)
 
-        # Exact normalized title → {category: index} for O(1) category-aware lookup
-        self._exact: dict[str, dict[str, int]] = defaultdict(dict)
+        # Exact normalized title → {category: [record indices]}. A LIST (not a
+        # single index) so same-title films — e.g. two "Obsession" Movies (1981 +
+        # 2026) — are disambiguated by year in fuzzy_match instead of always
+        # returning whichever appears first in the catalog.
+        self._exact: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
         for i, (ip_id, title, cat, norm_t, yr, imdb) in enumerate(self._records):
-            if cat not in self._exact[norm_t]:
-                self._exact[norm_t][cat] = i
+            self._exact[norm_t][cat].append(i)
 
         # IMDB ID → record index for direct lookup (overrides fuzzy entirely)
         self._imdb_idx: dict[str, int] = {}
@@ -607,8 +699,73 @@ class Catalog:
         # 1. Exact match — O(1), category-aware
         if norm in self._exact:
             cat_map = self._exact[norm]
-            # Prefer same category, fall back to any
-            chosen_idx = cat_map.get(category) or next(iter(cat_map.values()))
+            # Prefer same category, fall back to any. Each value is a LIST of record
+            # indices; when several films share the exact title, pick the one whose
+            # year matches the query (±1) so "Obsession 2026" lands on the 2026 entry
+            # rather than the 1981 one. Otherwise take the first.
+            idxs = cat_map.get(category) or next(iter(cat_map.values()))
+            chosen_idx = idxs[0]
+            if year:
+                # YEAR CHECK ON THE EXACT PATH (2026-07-28). This used to be
+                # gated on `len(idxs) > 1`, so with a SINGLE catalog entry the
+                # year was never consulted at all and the entry was returned
+                # blindly. 'Colony.2026.1080p.Korean.WEBRip' (1,841 seeders) has
+                # exactly one catalog 'Colony' — the 2010 film, tt1480655 — and
+                # landed on it despite a 16-year gap. The exact path returns
+                # before the hard year filter further down, so nothing else
+                # could catch it.
+                # The stored year may be a full date ('1997-07-12'), so int(ry)
+                # raises and MUST be treated as "cannot judge", never as a
+                # mismatch. Getting this wrong rejected 81 correct matches in a
+                # replay — Princess Mononoke (1997), My Neighbor Totoro (1988),
+                # Serial Experiments Lain (1998) — all same-title same-year.
+                def _yr(ry):
+                    try:
+                        return int(str(ry)[:4])
+                    except (ValueError, TypeError):
+                        return None
+                try:
+                    qy = int(str(year)[:4])
+                except (ValueError, TypeError):
+                    qy = None
+                matched = None
+                if qy is not None:
+                    for j in idxs:
+                        ry = _yr(self._records[j][4])
+                        if ry is not None and abs(ry - qy) <= 1:
+                            matched = j
+                            break
+                if matched is not None:
+                    chosen_idx = matched
+                elif qy is None:
+                    chosen_idx = idxs[0]        # unparseable query year: unchanged
+                else:
+                    # Nothing matched the year. If EVERY candidate carries a
+                    # year, that is positive evidence this release is a
+                    # different work — decline and let it ship UNMAPPED rather
+                    # than book a 2026 film's demand to a 2010 one. Unmapped is
+                    # honest: the feed has an UNMAPPED column precisely to
+                    # surface catalog gaps, and a wrong id is far more expensive
+                    # than a missing one.
+                    #
+                    # MOVIES ONLY. For a film the year in a release name IS the
+                    # film's year, so a mismatch is real evidence of a different
+                    # work. For TV it is usually the SEASON or edition year —
+                    # 'BBC Proms 2026', 'Celebrity Family Feud 2015 S12E02',
+                    # 'The Bear 2024 S03' — while the catalog carries the
+                    # FIRST-AIR year, so a mismatch proves nothing. Measured over
+                    # 4,640 live series hashes: rejecting on year would unmap 10,
+                    # nearly all wrongly, versus 7 mostly-correct movie
+                    # rejections. Series/Anime keep the previous behaviour.
+                    undated = [j for j in idxs if _yr(self._records[j][4]) is None]
+                    if not undated:
+                        if category == "Movies":
+                            return None
+                        chosen_idx = idxs[0]
+                    else:
+                        # Some candidate has no usable year — we cannot judge it,
+                        # so prefer it over an actively-contradicting one.
+                        chosen_idx = undated[0]
             ip_id, t, cat, norm_t, yr, imdb = self._records[chosen_idx]
             return (ip_id, t, cat)
 
@@ -758,6 +915,11 @@ class Catalog:
                 best_score, best_rec = cross_score, cross_rec
 
         if best_score >= SEQ_THRESHOLD or best_score >= CONTAIN_THRESHOLD:
+            # Distinctive-word divergence guard (2026-07): reject same-leading-word
+            # false positives (e.g. "Treasure And Dirt"→"Treasure Island"). Fuzzy
+            # path only — exact/IMDb matches returned earlier.
+            if best_rec and _titles_diverge(title, best_rec[1]):
+                return None
             return best_rec
 
         return None
@@ -1490,11 +1652,45 @@ def fetch_anilist_top(pages: int = ANILIST_PAGES, catalog=None) -> list[dict]:
 _ALIAS_DB = Path("/data/db/title_aliases.db")
 _ALIAS_IDX = None  # lazily-built (postings, by_ip)
 
+_ALIAS_CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+
+def _alias_drop(w: str) -> bool:
+    """Mirror of alias_remap._drop. Keeps standalone numbers 2..99 so a sequel
+    number is part of a title's identity — _AUDIT_TECH strips every bare number,
+    which collapsed 'Toy Story 3/4/5' to {toy,story} and made distinct works
+    freely interchangeable. Years (1900-2099) and 720/1080/2160 fall outside the
+    range and are still dropped."""
+    if w.isdigit():
+        return not (2 <= int(w) <= 99)
+    return bool(_AUDIT_TECH.match(w))
+
+
 def _alias_words(s: str) -> set:
-    s = "".join(c for c in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(c))
+    # Split compounds BEFORE folding: torrent names routinely drop the space in
+    # a compound title ('BoneTemple'), and without this the words never form and
+    # the hash gets dragged onto the shorter parent title.
+    s = _ALIAS_CAMEL.sub(" ", s or "")
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     s = s.lower().replace("'", "").replace("’", "").replace(".", "").replace("-", " ")
     s = re.sub(r"[^a-z0-9 ]", " ", s)
-    return {w for w in s.split() if w not in _AUDIT_SW and w != "no" and not _AUDIT_TECH.match(w)}
+    return {w for w in s.split() if w not in _AUDIT_SW and w != "no" and not _alias_drop(w)}
+
+
+def _alias_has_alpha(W) -> bool:
+    """An alias must carry at least one LETTER word. _alias_words deletes every
+    non-Latin character, so a foreign alias reduces to whatever digits it held
+    ('2,5 человека' -> {2,5}). Harmless while all digits were dropped; once
+    _alias_drop started keeping 2..99 such a set is a subset of any season pack
+    and would re-tag the whole swarm. Digit-only aliases carry no identity."""
+    return any(not w.isdigit() for w in W)
+
+
+def _alias_degraded(W) -> bool:
+    """A parse that glued the title into one long alphanumeric run has LOST
+    words; the surviving fragment then looks like a clean match for a shorter
+    title. Refuse to judge rather than remap on a corrupt word-set."""
+    return any(len(w) >= 15 and any(c.isdigit() for c in w) for w in W)
 
 def _alias_twords(raw: str) -> set:
     t, _ = parse_torrent_name(raw or "")
@@ -1512,7 +1708,7 @@ def _load_alias_index():
             entries = []
             for ip, al in a.execute("SELECT ip_id, alias FROM title_aliases"):
                 w = frozenset(_alias_words(al))
-                if len(w) >= 2:
+                if len(w) >= 2 and _alias_has_alpha(w):
                     entries.append((w, ip)); by_ip[ip].append(w)
             a.close()
             freq = Counter(x for w, _ in entries for x in w)
@@ -1524,13 +1720,21 @@ def _load_alias_index():
     _ALIAS_IDX = (postings, by_ip)
     return _ALIAS_IDX
 
-def alias_best_match(raw_name: str, cur_ip_id: str) -> str | None:
-    """Return a strictly-more-specific catalog ip_id for this torrent, or None."""
+def alias_best_match(raw_name: str, cur_ip_id: str, conn=None) -> str | None:
+    """Return a strictly-more-specific catalog ip_id for this torrent, or None.
+
+    GUARD PARITY, 2026-07-27. This is a second, inline copy of alias_remap.py's
+    logic, applied at INSERT time on every new hash. The seven guards added to
+    alias_remap on 2026-07-25/26 were never ported here, so the guarded version
+    ran twice a day while an unguarded duplicate ran on every collection pass.
+    The guards below mirror alias_remap.compute_changes; `conn` supplies the
+    category/title lookups the row-level ones need (skipped when not given).
+    """
     postings, by_ip = _load_alias_index()
     if not postings:
         return None
     T = _alias_twords(raw_name)
-    if not T:
+    if not T or _alias_degraded(T):
         return None
     best, bn = None, 0
     for w in T:
@@ -1539,6 +1743,37 @@ def alias_best_match(raw_name: str, cur_ip_id: str) -> str | None:
                 best, bn = ip, len(W)
     if best is None or best == cur_ip_id:
         return None
+    if conn is not None:
+        row = conn.execute(
+            "SELECT (SELECT category FROM titles WHERE ip_id=?),"
+            "       (SELECT category FROM titles WHERE ip_id=?),"
+            "       (SELECT title    FROM titles WHERE ip_id=?),"
+            "       (SELECT title    FROM titles WHERE ip_id=?)",
+            (cur_ip_id, best, cur_ip_id, best)).fetchone()
+        if row:
+            ccat, bcat, ctitle, btitle = row
+            # NO-ALIAS-COVERAGE: title_aliases.db is rebuilt weekly, so a title
+            # added since the last build has NO aliases and cb comes out 0 —
+            # which this read as "the current title does not fit" instead of "I
+            # have no evidence", dragging the hash onto whatever shorter title
+            # did have aliases. Applies ONLY when the current id is a real
+            # catalog entry: an ORPHAN id with no `titles` row has nothing to
+            # protect, and moving a hash off it onto a resolved title is a
+            # correction, not a conflation. (Caught in testing: this guard was
+            # blocking a legitimate move off orphan film-tt31184028 onto
+            # '28 Years Later: The Bone Temple'.)
+            if ctitle and not by_ip.get(cur_ip_id):
+                return None
+            # CATEGORY GUARD: word-sets cannot separate a film and a series that
+            # genuinely share a title (Robin Hood 1991 vs 2025); categories are
+            # authoritative, so crossing them is always wrong.
+            if ccat and bcat and ccat != bcat:
+                return None
+            # SAME-TITLE BLOCK: moving between two identically-titled entries is
+            # never a rename — it is the conflation signature.
+            if ctitle and btitle and " ".join(ctitle.split()).casefold() == \
+                                     " ".join(btitle.split()).casefold():
+                return None
     cb = max((len(W) for W in by_ip.get(cur_ip_id, ()) if W <= T), default=0)
     return best if bn > cb else None
 
@@ -1566,7 +1801,7 @@ def upsert_hashes(conn: sqlite3.Connection, rows: list[dict]) -> int:
         else:
             ip_id, mtitle = row["ip_id"], row["matched_title"]
             # Pillar-2 inline override: redirect to a more-specific alias match.
-            ov = alias_best_match(row["raw_name"], ip_id)
+            ov = alias_best_match(row["raw_name"], ip_id, conn)
             if ov:
                 t = conn.execute("SELECT title FROM titles WHERE ip_id=?", (ov,)).fetchone()
                 if t:
@@ -1802,6 +2037,14 @@ def main():
             if not title:
                 _drop(raw_name, "no-title")
                 continue
+            if not year:
+                # PTN often leaves the year in the title ("Obsession 2026") or misses
+                # it entirely; pull a 4-digit film year (19xx/20xx) from the raw name
+                # so same-title different-year films disambiguate — the year drives
+                # both the fuzzy_match hard-year filter and the exact-match tiebreak.
+                _ym = re.search(r'\b(19\d{2}|20\d{2})\b', raw_name or "")
+                if _ym:
+                    year = _ym.group(1)
 
             # ── Ambiguous title guard ─────────────────────────────────────────
             # Short titles, acronyms, and all-stop-word titles (CIA, M.I.A., It,
@@ -1817,6 +2060,18 @@ def main():
                 continue
 
             result = catalog.fuzzy_match(title, category, year, threshold=args.threshold)
+            if not result:
+                # Fallback retry with season/episode + stray-year tokens stripped. PTN
+                # leaves them in the title on some scene names ("Euphoria US S03",
+                # "The Agency US 2024"), and the extra tokens sink the match. Runs ONLY
+                # when the strict match already returned None, so existing matches are
+                # unchanged; a residual region tag (US/UK) is tolerated by the
+                # SequenceMatcher ratio.
+                _clean = re.sub(r'\b(?:S\d{1,2}(?:E\d{1,3})?|Season\s+\d+)\b', ' ', title, flags=re.I)
+                _clean = re.sub(r'\b(?:19|20)\d{2}\b', ' ', _clean)
+                _clean = re.sub(r'\s+', ' ', _clean).strip()
+                if _clean and _clean.lower() != title.lower():
+                    result = catalog.fuzzy_match(_clean, category, year, threshold=args.threshold)
 
             # ── Year cross-check (Layer 1b): parquet rec_yr is often None/NaT
             # for Wikidata entries.  Use the titles table as ground truth.
@@ -1907,6 +2162,12 @@ def main():
     # ── Write to DB ──
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
+
+    # Ensure the ip_id index exists (idempotent). Without it, per-ip_id lookups in
+    # merge/export + canonical grouping full-scan the ~150k-row hashes table (a
+    # correlated hashes_found recompute took 15+ min and lock-stormed the DHT
+    # writers, 2026-07-13). Cheap covering index; built in ~1s.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hashes_ip_id ON hashes(ip_id)")
 
     # Ensure the titles table has the reference-id columns (idempotent)
     _cols = {r[1] for r in conn.execute("PRAGMA table_info(titles)")}

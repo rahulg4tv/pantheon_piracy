@@ -1616,7 +1616,15 @@ def load_hashes(category: str | None = None,
         WITH last_active AS (
             SELECT hash, MAX(last_seen) AS max_seen
             FROM peers
+            -- PERF (2026-07-25 incident): unbounded, this GROUP BY spans the
+            -- ENTIRE peers table (66M rows / 20GB) purely to build an ORDER BY
+            -- key. Cold (post-reboot, empty page cache) that read never
+            -- completed and every collector deadlocked on I/O for hours.
+            -- The 30-day bound uses idx_peers_seen and measured 44s cold /
+            -- instant warm, with no behaviour change: hashes with no recent
+            -- peers get NULL and sort last, exactly as NULLS LAST intends.
             WHERE ip != '_queried_'
+              AND last_seen >= date('now','-30 days')
             GROUP BY hash
         )
         SELECT h.hash, h.ip_id, h.title, h.category, h.seeders

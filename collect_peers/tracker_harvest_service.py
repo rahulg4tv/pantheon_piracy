@@ -173,8 +173,17 @@ def load_hashes(limit: int) -> list[str]:
             SELECT h.hash
             FROM hashes h
             LEFT JOIN (
+                -- PERF (2026-07-25 incident): unbounded, this GROUP BY spans
+                -- the whole 66M-row peers table just to build the 3rd-level
+                -- ORDER BY key below. Cold (post-reboot) it never finished and
+                -- blocked the harvester for hours. The 30-day bound uses
+                -- idx_peers_seen; hashes with no recent peers get NULL and sort
+                -- last, which is the same intent as before.
                 SELECT hash, MAX(last_seen) ls
-                FROM peers WHERE ip != '_queried_' GROUP BY hash
+                FROM peers
+                WHERE ip != '_queried_'
+                  AND last_seen >= date('now','-30 days')
+                GROUP BY hash
             ) p ON p.hash = h.hash
             ORDER BY COALESCE(h.seeders, 0) DESC,
                      (h.first_seen >= date('now','-2 days')) DESC,
