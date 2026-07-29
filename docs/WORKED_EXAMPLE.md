@@ -124,7 +124,20 @@ Colony  film-tt34385135   2026-07-28  India           2
 That is the product. *"On 28 July, 3 distinct people in the US and 2 in India
 were sharing Colony."*
 
-Real days look the same, just bigger: thousands of IPs per title, ~200 countries.
+Real days look the same, just bigger — a few thousand titles, ~200 countries, and
+thousands of IPs on a popular title. Here is the same film in an actual feed
+file, with the full column set:
+
+```
+TITLE,IP_ID,IMDB_ID,ANIME_ID,DATE,CATEGORY,COUNTRY_4,IP_COUNT,DC_IP_COUNT,UNMAPPED,IP_COUNT_DHT,IP_COUNT_HARVEST,IP_COUNT_PEX
+Colony,film-tt34385135,tt34385135,,2026-07-28,Video: Movie,United States,2453,990,0,154,2432,1
+```
+
+Reading that row: **2,453** distinct people in the US, of whom **990** came
+through a datacenter or VPN (kept, not dropped — a VPN user is still a pirate).
+`UNMAPPED=0` means the title is in the catalog. The last three columns show which
+sources saw those people — and note they sum to more than 2,453, because a person
+seen by two sources is in both columns but counted **once** in `IP_COUNT`.
 
 ---
 
